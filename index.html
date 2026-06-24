@@ -1,0 +1,1304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>GP Surrogate Lab — CAFM</title>
+
+<!-- Pyodide (runs Python/sklearn in browser) -->
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+<!-- Chart.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- Chart.js annotation plugin for vertical lines, mean lines -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/3.0.1/chartjs-plugin-annotation.min.js"></script>
+
+<style>
+/* ── Design tokens ──────────────────────────────────────────── */
+:root{
+  --bg:        #0d1117;
+  --panel:     #161b22;
+  --border:    #30363d;
+  --text:      #e6edf3;
+  --muted:     #8b949e;
+  --accent:    #58a6ff;
+  --accent2:   #3fb950;
+  --warn:      #d29922;
+  --err:       #f85149;
+  --purple:    #bc8cff;
+  --orange:    #ffa657;
+
+  --c-matern25: #4C9BE8;
+  --c-matern15: #E8834C;
+  --c-rbf:      #4CE87A;
+  --c-rq:       #C84CE8;
+
+  --radius: 8px;
+  --mono: "JetBrains Mono", "Fira Mono", monospace;
+  --sans: "Inter", system-ui, sans-serif;
+}
+
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;}
+
+/* scrollbar */
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+
+/* ── Layout ─────────────────────────────────────────────────── */
+#app{display:grid;grid-template-columns:300px 1fr;grid-template-rows:52px 1fr;height:100vh;overflow:hidden;}
+
+/* topbar */
+#topbar{
+  grid-column:1/-1;
+  display:flex;align-items:center;gap:16px;
+  padding:0 20px;
+  background:var(--panel);border-bottom:1px solid var(--border);
+  position:relative;z-index:10;
+}
+#topbar h1{font-size:15px;font-weight:700;letter-spacing:.4px;color:var(--text);}
+#topbar h1 span{color:var(--accent);font-family:var(--mono);}
+#status-bar{margin-left:auto;font-size:12px;color:var(--muted);font-family:var(--mono);}
+#status-bar.loading{color:var(--warn);}
+#status-bar.ready{color:var(--accent2);}
+#status-bar.error{color:var(--err);}
+
+/* sidebar */
+#sidebar{
+  background:var(--panel);border-right:1px solid var(--border);
+  overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:14px;
+}
+
+/* main area */
+#main{overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:16px;}
+
+/* ── Sidebar sections ────────────────────────────────────────── */
+.section-label{
+  font-size:10px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;
+  color:var(--muted);padding-bottom:6px;border-bottom:1px solid var(--border);
+}
+.field{display:flex;flex-direction:column;gap:4px;}
+.field label{font-size:11px;color:var(--muted);}
+.field select,.field input[type=number]{
+  background:var(--bg);border:1px solid var(--border);
+  color:var(--text);border-radius:var(--radius);padding:5px 8px;font-size:12px;
+  width:100%;outline:none;
+}
+.field select:focus,.field input[type=number]:focus{border-color:var(--accent);}
+
+/* slider row */
+.slider-row{display:flex;flex-direction:column;gap:3px;margin-bottom:4px;}
+.slider-row .row-header{display:flex;justify-content:space-between;align-items:center;}
+.slider-row label{font-size:11px;color:var(--muted);}
+.slider-row .val{font-size:11px;font-family:var(--mono);color:var(--accent);}
+.slider-row input[type=range]{
+  width:100%;accent-color:var(--accent);cursor:pointer;
+}
+
+/* toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;}
+.toggle-row label{font-size:11px;color:var(--muted);}
+.toggle-switch{position:relative;width:34px;height:18px;}
+.toggle-switch input{opacity:0;width:0;height:0;}
+.slider-toggle{
+  position:absolute;inset:0;cursor:pointer;
+  background:var(--border);border-radius:18px;transition:.2s;
+}
+.slider-toggle:before{
+  content:'';position:absolute;height:12px;width:12px;
+  left:3px;bottom:3px;background:var(--muted);
+  border-radius:50%;transition:.2s;
+}
+input:checked + .slider-toggle{background:var(--accent);}
+input:checked + .slider-toggle:before{transform:translateX(16px);background:#fff;}
+
+/* freeze display */
+#freeze-vals{
+  font-family:var(--mono);font-size:10px;color:var(--muted);
+  line-height:1.7;background:var(--bg);border-radius:var(--radius);
+  padding:8px;border:1px solid var(--border);
+}
+#freeze-vals span.sweep-param{color:var(--accent2);}
+#freeze-vals span.frozen-param{color:var(--purple);}
+
+/* buttons */
+.btn{
+  width:100%;padding:8px;border-radius:var(--radius);border:none;cursor:pointer;
+  font-size:12px;font-weight:600;letter-spacing:.3px;transition:opacity .15s;
+}
+.btn:hover{opacity:.85;}
+.btn-primary{background:var(--accent);color:#000;}
+.btn-secondary{background:var(--border);color:var(--text);}
+.btn-warn{background:var(--warn);color:#000;}
+.btn-sm{padding:4px 10px;width:auto;font-size:11px;}
+
+/* kernel chips */
+.kernel-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.kchip{
+  padding:4px 10px;border-radius:20px;border:1.5px solid var(--border);
+  font-size:11px;cursor:pointer;transition:.15s;user-select:none;color:var(--muted);
+}
+.kchip.active{color:#fff;}
+.kchip[data-k="Matern-2.5"].active{border-color:var(--c-matern25);background:var(--c-matern25)22;color:var(--c-matern25);}
+.kchip[data-k="Matern-1.5"].active{border-color:var(--c-matern15);background:var(--c-matern15)22;color:var(--c-matern15);}
+.kchip[data-k="RBF"].active{border-color:var(--c-rbf);background:var(--c-rbf)22;color:var(--c-rbf);}
+.kchip[data-k="RationalQuadratic"].active{border-color:var(--c-rq);background:var(--c-rq)22;color:var(--c-rq);}
+
+/* ── Main panels ─────────────────────────────────────────────── */
+.card{
+  background:var(--panel);border:1px solid var(--border);
+  border-radius:var(--radius);padding:14px;
+}
+.card-title{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.8px;
+  text-transform:uppercase;margin-bottom:12px;}
+
+/* tabs */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px;}
+.tab{
+  padding:7px 14px;font-size:12px;cursor:pointer;
+  border-bottom:2px solid transparent;color:var(--muted);
+  transition:.15s;
+}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+
+/* chart wrappers */
+.chart-wrap{position:relative;width:100%;}
+.chart-wrap canvas{width:100%!important;}
+
+/* comparison shelf */
+#shelf{display:flex;flex-wrap:wrap;gap:10px;}
+.shelf-card{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:8px;min-width:180px;max-width:220px;
+}
+.shelf-card .shelf-label{font-size:10px;color:var(--muted);margin-bottom:4px;font-family:var(--mono);}
+.shelf-card canvas{width:100%!important;max-height:120px;}
+.shelf-card .shelf-meta{font-size:10px;color:var(--muted);margin-top:4px;line-height:1.5;}
+
+/* error stats grid */
+.error-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;}
+.estat{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:8px;}
+.estat .ev{font-size:17px;font-family:var(--mono);font-weight:700;color:var(--accent);}
+.estat .ek{font-size:10px;color:var(--muted);margin-top:2px;}
+.estat.warn .ev{color:var(--warn);}
+.estat.good .ev{color:var(--accent2);}
+
+/* kernel info box */
+#kernel-info{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:10px;font-size:11px;line-height:1.7;font-family:var(--mono);color:var(--muted);
+}
+#kernel-info b{color:var(--text);}
+
+/* log */
+#log{
+  font-family:var(--mono);font-size:11px;color:var(--muted);
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:8px;max-height:100px;overflow-y:auto;line-height:1.6;
+}
+#log .log-info{color:var(--muted);}
+#log .log-ok{color:var(--accent2);}
+#log .log-warn{color:var(--warn);}
+#log .log-err{color:var(--err);}
+
+/* upload zone */
+#drop-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);
+  padding:14px 10px;text-align:center;cursor:pointer;transition:.2s;
+  font-size:12px;color:var(--muted);
+}
+#drop-zone:hover,#drop-zone.drag-over{border-color:var(--accent);color:var(--accent);}
+#drop-zone input{display:none;}
+
+/* progress bar */
+#progress-bar-wrap{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:6px;}
+#progress-bar{height:100%;width:0;background:var(--accent);transition:width .3s;}
+
+/* no data overlay */
+#no-data{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;
+  color:var(--muted);font-size:13px;pointer-events:none;
+}
+
+/* responsive */
+@media(max-width:900px){
+  #app{grid-template-columns:1fr;grid-template-rows:52px auto 1fr;}
+  #sidebar{max-height:420px;}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ── Top bar ──────────────────────────────────────────────── -->
+<div id="topbar">
+  <h1>GP Surrogate Lab &nbsp;/&nbsp; <span>CAFM Pedestrian</span></h1>
+  <div id="status-bar" class="loading">⏳ Loading Python runtime…</div>
+</div>
+
+<!-- ── Sidebar ──────────────────────────────────────────────── -->
+<div id="sidebar">
+
+  <!-- Dataset -->
+  <div>
+    <div class="section-label">Dataset</div>
+    <div style="margin-top:8px;">
+      <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept=".npz"/>
+        📂 Drop <b>.npz</b> here or click
+        <div id="file-name" style="font-size:10px;margin-top:4px;color:var(--accent);"></div>
+      </div>
+      <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+    </div>
+    <div class="field" style="margin-top:8px;">
+      <label>Use first N points</label>
+      <input type="number" id="n-points" value="50" min="5" max="1000" step="5"/>
+    </div>
+  </div>
+
+  <!-- Sweep config -->
+  <div>
+    <div class="section-label">Sweep Config</div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+      <div class="field">
+        <label>Sweep parameter (X axis)</label>
+        <select id="sweep-param">
+          <option value="0">v0_mean — desired speed (m/s)</option>
+          <option value="1">tau — reaction time (s)</option>
+          <option value="2">A — interaction force (N)</option>
+          <option value="3">R_safety — safety radius (m)</option>
+          <option value="4" selected>density (ped/m²)</option>
+          <option value="5">flow_ratio — counterflow fraction</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Output (Y axis)</label>
+        <select id="target-param">
+          <option value="0" selected>mean_crossing_time</option>
+          <option value="1">flow_rate</option>
+          <option value="2">order_param_mean</option>
+          <option value="3">mean_speed</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Freeze panel -->
+  <div>
+    <div class="section-label">Freeze Point</div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+      <div class="toggle-row">
+        <label>Mode: <b id="freeze-mode-label">Mean</b></label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="freeze-toggle"/>
+          <span class="slider-toggle"></span>
+        </label>
+      </div>
+      <div id="freeze-mode-hint" style="font-size:10px;color:var(--muted);">Using column means</div>
+      <button class="btn btn-secondary btn-sm" id="resample-btn" style="display:none;">↺ Resample random point</button>
+      <div id="freeze-vals">Load dataset first…</div>
+    </div>
+  </div>
+
+  <!-- Kernel -->
+  <div>
+    <div class="section-label">Kernel</div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:10px;">
+      <div class="kernel-chips">
+        <div class="kchip active" data-k="Matern-2.5">Matérn 2.5</div>
+        <div class="kchip" data-k="Matern-1.5">Matérn 1.5</div>
+        <div class="kchip" data-k="RBF">RBF</div>
+        <div class="kchip" data-k="RationalQuadratic">Rat-Quad</div>
+      </div>
+      <div id="kernel-info">Select a kernel to see details.</div>
+    </div>
+  </div>
+
+  <!-- Hyperparameters -->
+  <div>
+    <div class="section-label">Hyperparameters</div>
+    <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px;">
+
+      <div class="slider-row">
+        <div class="row-header">
+          <label>length_scale</label>
+          <span class="val" id="ls-val">1.00</span>
+        </div>
+        <input type="range" id="ls-slider" min="-2" max="2" step="0.05" value="0"/>
+        <div style="font-size:9px;color:var(--muted);">log₁₀ scale: 0.01 → 100</div>
+      </div>
+
+      <div class="slider-row" id="nu-row">
+        <div class="row-header">
+          <label>ν (nu) — Matérn only</label>
+          <span class="val" id="nu-val">2.5</span>
+        </div>
+        <select id="nu-select" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);padding:4px 6px;font-size:12px;">
+          <option value="0.5">0.5 (Ornstein-Uhlenbeck)</option>
+          <option value="1.5">1.5</option>
+          <option value="2.5" selected>2.5</option>
+        </select>
+      </div>
+
+      <div class="slider-row" id="rq-alpha-row" style="display:none;">
+        <div class="row-header">
+          <label>α (RQ scale mixture)</label>
+          <span class="val" id="rq-alpha-val">1.00</span>
+        </div>
+        <input type="range" id="rq-alpha-slider" min="-2" max="2" step="0.05" value="0"/>
+        <div style="font-size:9px;color:var(--muted);">log₁₀ scale</div>
+      </div>
+
+      <div class="slider-row">
+        <div class="row-header">
+          <label>alpha (jitter / noise floor)</label>
+          <span class="val" id="alpha-val">1e-6</span>
+        </div>
+        <input type="range" id="alpha-slider" min="-6" max="1" step="0.25" value="-6"/>
+        <div style="font-size:9px;color:var(--muted);">log₁₀ scale: 1e-6 → 10</div>
+      </div>
+
+      <div class="toggle-row">
+        <label>Add WhiteKernel noise</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="noise-toggle"/>
+          <span class="slider-toggle"></span>
+        </label>
+      </div>
+      <div class="slider-row" id="noise-level-row" style="display:none;">
+        <div class="row-header">
+          <label>noise_level</label>
+          <span class="val" id="noise-val">0.01</span>
+        </div>
+        <input type="range" id="noise-slider" min="-4" max="1" step="0.25" value="-2"/>
+        <div style="font-size:9px;color:var(--muted);">log₁₀ scale</div>
+      </div>
+
+      <div class="field">
+        <label>n_restarts_optimizer</label>
+        <input type="number" id="n-restarts" value="5" min="0" max="20"/>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run -->
+  <div>
+    <button class="btn btn-primary" id="run-btn" disabled>▶ Run GP</button>
+    <div style="margin-top:6px;">
+      <button class="btn btn-secondary btn-sm" id="store-btn" disabled style="width:100%;">📌 Store current plot</button>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div>
+    <div class="section-label">Console</div>
+    <div id="log" style="margin-top:6px;"><span class="log-info">Waiting…</span></div>
+  </div>
+
+</div><!-- /sidebar -->
+
+<!-- ── Main ─────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- Tabs -->
+  <div class="card" style="padding:0 14px;">
+    <div class="tabs">
+      <div class="tab active" data-tab="gp-fit">GP Fit + Uncertainty</div>
+      <div class="tab" data-tab="error">Error Analysis</div>
+      <div class="tab" data-tab="comparison">Stored Comparisons</div>
+    </div>
+  </div>
+
+  <!-- GP Fit tab -->
+  <div id="tab-gp-fit" class="tab-content">
+    <div class="card" style="position:relative;min-height:360px;">
+      <div class="card-title">GP Mean Prediction + 95% Confidence Interval</div>
+      <div class="chart-wrap" style="height:340px;">
+        <canvas id="gp-chart"></canvas>
+        <div id="no-data-gp" class="no-data" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:13px;">
+          <span style="font-size:28px;">📡</span>
+          Upload dataset and run GP
+        </div>
+      </div>
+      <!-- Optimised kernel readout -->
+      <div id="opt-kernel-box" style="margin-top:12px;display:none;">
+        <div class="section-label">Optimised Kernel</div>
+        <div id="opt-kernel-text" style="font-family:var(--mono);font-size:11px;color:var(--accent);margin-top:4px;"></div>
+        <div id="lml-text" style="font-size:11px;color:var(--muted);margin-top:2px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error tab -->
+  <div id="tab-error" class="tab-content" style="display:none;">
+    <div class="card">
+      <div class="card-title">Error Analysis</div>
+      <div class="error-stats" id="error-stats">
+        <div class="estat"><div class="ev" id="e-rmse">—</div><div class="ek">RMSE</div></div>
+        <div class="estat"><div class="ev" id="e-mae">—</div><div class="ek">MAE</div></div>
+        <div class="estat"><div class="ev" id="e-mean">—</div><div class="ek">μ_error</div></div>
+        <div class="estat"><div class="ev" id="e-var">—</div><div class="ek">σ²_error</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Residuals (actual − predicted)</div>
+          <div class="chart-wrap" style="height:220px;"><canvas id="resid-chart"></canvas></div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Error distribution + fitted N(μ,σ)</div>
+          <div class="chart-wrap" style="height:220px;"><canvas id="hist-chart"></canvas></div>
+        </div>
+      </div>
+      <div id="shapiro-box" style="font-size:11px;color:var(--muted);margin-top:10px;font-family:var(--mono);"></div>
+    </div>
+  </div>
+
+  <!-- Comparison tab -->
+  <div id="tab-comparison" class="tab-content" style="display:none;">
+    <div class="card">
+      <div class="card-title">Stored Plots</div>
+      <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+        <button class="btn btn-warn btn-sm" id="clear-shelf-btn">🗑 Clear all</button>
+      </div>
+      <div id="shelf">
+        <div style="color:var(--muted);font-size:12px;">No plots stored yet. Run GP and click 📌 Store.</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /app -->
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// 1. GLOBALS & CONSTANTS
+// ════════════════════════════════════════════════════════════════
+const PARAM_NAMES  = ["v0_mean","tau","A","R_safety","density","flow_ratio"];
+const PARAM_BOUNDS = {
+  v0_mean   : [0.80, 1.60],
+  tau       : [0.30, 0.80],
+  A         : [10.0, 40.0],
+  R_safety  : [0.80, 1.60],
+  density   : [0.10, 1.00],
+  flow_ratio: [0.00, 0.50],
+};
+const OUTPUT_NAMES = ["mean_crossing_time","flow_rate","order_param_mean","mean_speed"];
+
+const KERNEL_COLORS = {
+  "Matern-2.5"        : "#4C9BE8",
+  "Matern-1.5"        : "#E8834C",
+  "RBF"               : "#4CE87A",
+  "RationalQuadratic" : "#C84CE8",
+};
+
+const KERNEL_DOCS = {
+  "Matern-2.5": "<b>Matérn ν=2.5</b><br/>Once-differentiable. Gold standard for physical simulation surrogates. Smooth but not infinitely so — great fit for pedestrian dynamics where small discontinuities can exist. C² smooth.",
+  "Matern-1.5": "<b>Matérn ν=1.5</b><br/>C¹ smooth only. More sensitive to local variation. Good when output has sharper transitions (e.g. near congestion threshold).",
+  "RBF"       : "<b>Radial Basis Function (Squared Exponential)</b><br/>Infinitely smooth (C∞). Often over-smooths simulation data. Length-scale controls how quickly correlations decay.",
+  "RationalQuadratic": "<b>Rational Quadratic</b><br/>Scale mixture of RBFs with different length-scales. The α param controls mix — α→∞ converges to RBF. Good when output has multi-scale variation.",
+};
+
+let pyodide = null;
+let dataX   = null, dataY = null;
+let freezePoint = null;
+let currentResult = null;
+let shelfItems = [];
+let gpChart = null, residChart = null, histChart = null;
+let activeKernel = "Matern-2.5";
+let selectedTab = "gp-fit";
+let randomSeed = 42;
+
+// ════════════════════════════════════════════════════════════════
+// 2. PYODIDE INIT
+// ════════════════════════════════════════════════════════════════
+async function initPyodide(){
+  setStatus("loading", "⏳ Loading Python runtime…");
+  log("info","Loading Pyodide…");
+  pyodide = await loadPyodide();
+  log("info","Installing packages (sklearn, scipy, numpy)…");
+  await pyodide.loadPackage(["numpy","scikit-learn","scipy"]);
+  setStatus("ready","✓ Python ready");
+  log("ok","Runtime ready. Upload your .npz file.");
+}
+
+// ════════════════════════════════════════════════════════════════
+// 3. UTILITIES
+// ════════════════════════════════════════════════════════════════
+function setStatus(cls, msg){
+  const el = document.getElementById("status-bar");
+  el.className = cls; el.textContent = msg;
+}
+
+function log(type, msg){
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.className = `log-${type}`;
+  line.textContent = `› ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+  // keep last 40 lines
+  while(el.children.length > 40) el.removeChild(el.firstChild);
+}
+
+function fmtNum(v, dec=4){
+  if(v===null||v===undefined) return "—";
+  return typeof v === "number" ? v.toFixed(dec) : v;
+}
+
+function lerp(a,b,t){return a+(b-a)*t;}
+
+function hexToRgba(hex, a){
+  const r=parseInt(hex.slice(1,3),16);
+  const g=parseInt(hex.slice(3,5),16);
+  const b=parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// 4. FILE UPLOAD
+// ════════════════════════════════════════════════════════════════
+function setupFileUpload(){
+  const dz = document.getElementById("drop-zone");
+  const fi = document.getElementById("file-input");
+
+  dz.addEventListener("dragover", e=>{e.preventDefault();dz.classList.add("drag-over");});
+  dz.addEventListener("dragleave",()=>dz.classList.remove("drag-over"));
+  dz.addEventListener("drop", e=>{
+    e.preventDefault(); dz.classList.remove("drag-over");
+    const f = e.dataTransfer.files[0];
+    if(f) handleFile(f);
+  });
+  fi.addEventListener("change", ()=>{ if(fi.files[0]) handleFile(fi.files[0]); });
+}
+
+async function handleFile(file){
+  if(!file.name.endsWith(".npz")){
+    log("err","Only .npz files supported."); return;
+  }
+  document.getElementById("file-name").textContent = file.name;
+  log("info",`Loading ${file.name}…`);
+  setProgress(20);
+
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  pyodide.FS.writeFile("/tmp/dataset.npz", bytes);
+  setProgress(60);
+
+  const N = parseInt(document.getElementById("n-points").value) || 50;
+
+  try{
+    const result = await pyodide.runPythonAsync(`
+import numpy as np
+data = np.load("/tmp/dataset.npz")
+X_full = data['X']
+Y_full = data['Y']
+N = ${N}
+X = X_full[:N]
+Y = Y_full[:N]
+import json
+{
+  "X": X.tolist(),
+  "Y": Y.tolist(),
+  "X_min": X.min(axis=0).tolist(),
+  "X_max": X.max(axis=0).tolist(),
+  "X_mean": X.mean(axis=0).tolist(),
+  "n_features": int(X.shape[1]),
+  "n_outputs": int(Y.shape[1]) if Y.ndim > 1 else 1,
+  "n_rows": int(X.shape[0])
+}
+`);
+
+    // inside handleFile, after result.toJs(...)
+    const res = result.toJs({dict_converter: Object.fromEntries});
+
+    dataX = res.X;
+    dataY = res.Y;
+    const xMin  = res.X_min;
+    const xMax  = res.X_max;
+    const xMean = res.X_mean;
+    const nRows = res.n_rows;
+    const nFeatures = res.n_features;   // previously used in log line
+
+    log("ok", `Loaded ${nRows} rows × ${nFeatures} features`);
+    setProgress(100);
+    setTimeout(()=>setProgress(0),800);
+
+    // init freeze point (mean)
+    freezePoint = [...xMean];
+    updateFreezeDisplay(xMean, xMin, xMax);
+    document.getElementById("run-btn").disabled = false;
+    setStatus("ready","✓ Dataset loaded");
+
+  } catch(e){
+    log("err", "Failed to load: " + e.message);
+    setStatus("error","✗ Load failed");
+    setProgress(0);
+  }
+}
+
+function setProgress(pct){
+  document.getElementById("progress-bar").style.width = pct + "%";
+}
+
+// ════════════════════════════════════════════════════════════════
+// 5. FREEZE PANEL
+// ════════════════════════════════════════════════════════════════
+document.getElementById("freeze-toggle").addEventListener("change", function(){
+  const isRandom = this.checked;
+  document.getElementById("freeze-mode-label").textContent = isRandom ? "Random" : "Mean";
+  document.getElementById("freeze-mode-hint").textContent  = isRandom
+    ? "Sampled uniformly within PARAM_BOUNDS" : "Using column means";
+  document.getElementById("resample-btn").style.display = isRandom ? "block" : "none";
+  if(dataX) updateFreezePoint(isRandom);
+});
+
+document.getElementById("resample-btn").addEventListener("click", ()=>{
+  updateFreezePoint(true);
+});
+
+async function updateFreezePoint(isRandom){
+  if(!dataX){ log("warn","Load dataset first."); return; }
+
+  if(!isRandom){
+    // recompute mean
+    const means = PARAM_NAMES.map((_,i) => dataX.reduce((s,r)=>s+r[i],0)/dataX.length);
+    freezePoint = means;
+    updateFreezeDisplay(means, null, null);
+    return;
+  }
+  // random within PARAM_BOUNDS
+  randomSeed = Math.floor(Math.random()*100000);
+  const pts = PARAM_NAMES.map(p=>{
+    const [lo,hi] = PARAM_BOUNDS[p];
+    return lo + Math.random()*(hi-lo);
+  });
+  freezePoint = pts;
+
+  // also show min/max from data for reference
+  const mins = PARAM_NAMES.map((_,i) => Math.min(...dataX.map(r=>r[i])));
+  const maxs = PARAM_NAMES.map((_,i) => Math.max(...dataX.map(r=>r[i])));
+  updateFreezeDisplay(pts, mins, maxs);
+  log("info",`New random freeze point (seed ${randomSeed})`);
+}
+
+function updateFreezeDisplay(vals, mins, maxs){
+  const sweepIdx = parseInt(document.getElementById("sweep-param").value);
+  const el = document.getElementById("freeze-vals");
+  el.innerHTML = PARAM_NAMES.map((p,i)=>{
+    const v = vals[i] !== undefined ? vals[i].toFixed(4) : "—";
+    if(i===sweepIdx){
+      return `<span class="sweep-param">▶ ${p.padEnd(12,' ')} ${v}  [sweep]</span>`;
+    }
+    return `<span class="frozen-param">  ${p.padEnd(12,' ')} ${v}</span>`;
+  }).join("\n");
+}
+
+// ════════════════════════════════════════════════════════════════
+// 6. HYPERPARAMETER SLIDERS
+// ════════════════════════════════════════════════════════════════
+function setupSliders(){
+  // length scale (log10)
+  const lsSlider = document.getElementById("ls-slider");
+  const lsVal    = document.getElementById("ls-val");
+  lsSlider.addEventListener("input",()=>{
+    const v = Math.pow(10, parseFloat(lsSlider.value));
+    lsVal.textContent = v.toFixed(v<0.1?4:v<1?3:2);
+  });
+
+  // alpha (log10)
+  const aSlider = document.getElementById("alpha-slider");
+  const aVal    = document.getElementById("alpha-val");
+  aSlider.addEventListener("input",()=>{
+    const v = Math.pow(10, parseFloat(aSlider.value));
+    aVal.textContent = v < 0.001 ? v.toExponential(0) : v.toFixed(3);
+  });
+
+  // noise (log10)
+  const nSlider = document.getElementById("noise-slider");
+  const nVal    = document.getElementById("noise-val");
+  nSlider.addEventListener("input",()=>{
+    const v = Math.pow(10, parseFloat(nSlider.value));
+    nVal.textContent = v < 0.001 ? v.toExponential(1) : v.toFixed(3);
+  });
+
+  // rq-alpha
+  const rqSlider = document.getElementById("rq-alpha-slider");
+  const rqVal    = document.getElementById("rq-alpha-val");
+  rqSlider.addEventListener("input",()=>{
+    const v = Math.pow(10, parseFloat(rqSlider.value));
+    rqVal.textContent = v.toFixed(3);
+  });
+
+  // noise toggle
+  document.getElementById("noise-toggle").addEventListener("change", function(){
+    document.getElementById("noise-level-row").style.display = this.checked ? "flex" : "none";
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// 7. KERNEL CHIPS
+// ════════════════════════════════════════════════════════════════
+function setupKernelChips(){
+  document.querySelectorAll(".kchip").forEach(chip=>{
+    chip.addEventListener("click",()=>{
+      document.querySelectorAll(".kchip").forEach(c=>c.classList.remove("active"));
+      chip.classList.add("active");
+      activeKernel = chip.dataset.k;
+      updateKernelUI();
+    });
+  });
+  updateKernelUI();
+}
+
+function updateKernelUI(){
+  document.getElementById("kernel-info").innerHTML = KERNEL_DOCS[activeKernel] || "";
+  // show/hide nu selector
+  const isMatern = activeKernel.startsWith("Matern");
+  document.getElementById("nu-row").style.display = isMatern ? "flex" : "none";
+  document.getElementById("rq-alpha-row").style.display = activeKernel==="RationalQuadratic" ? "flex" : "none";
+}
+
+// ════════════════════════════════════════════════════════════════
+// 8. RUN GP (Pyodide)
+// ════════════════════════════════════════════════════════════════
+document.getElementById("run-btn").addEventListener("click", runGP);
+
+async function runGP(){
+  if(!dataX){ log("warn","Load a dataset first."); return; }
+
+  const sweepIdx   = parseInt(document.getElementById("sweep-param").value);
+  const targetIdx  = parseInt(document.getElementById("target-param").value);
+  const ls         = Math.pow(10, parseFloat(document.getElementById("ls-slider").value));
+  const alpha      = Math.pow(10, parseFloat(document.getElementById("alpha-slider").value));
+  const noiseOn    = document.getElementById("noise-toggle").checked;
+  const noiseLevel = Math.pow(10, parseFloat(document.getElementById("noise-slider").value));
+  const nu         = parseFloat(document.getElementById("nu-select").value);
+  const rqAlpha    = Math.pow(10, parseFloat(document.getElementById("rq-alpha-slider").value));
+  const nRestarts  = parseInt(document.getElementById("n-restarts").value);
+  const kernel     = activeKernel;
+
+  log("info",`Running ${kernel} | ls=${ls.toFixed(3)} | alpha=${alpha.toExponential(1)} | sweep=${PARAM_NAMES[sweepIdx]} → ${OUTPUT_NAMES[targetIdx]}`);
+  setStatus("loading","⏳ Fitting GP…");
+  document.getElementById("run-btn").disabled = true;
+
+  // Prepare freeze point JS array
+  const fp = [...freezePoint];
+
+  const code = `
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import (
+    Matern, RBF, RationalQuadratic, WhiteKernel, ConstantKernel as C
+)
+from scipy import stats
+import warnings
+warnings.filterwarnings("ignore")
+
+# ── data ──
+X_all = np.array(${JSON.stringify(dataX)})
+Y_all = np.array(${JSON.stringify(dataY)})
+
+sweep_idx = ${sweepIdx}
+freeze_pt = np.array(${JSON.stringify(fp)})
+
+# Sort by sweep column so that y matches the sorted sweep values
+sort_idx = np.argsort(X_all[:, sweep_idx])
+sweep_vals = X_all[sort_idx, sweep_idx]
+y = Y_all[sort_idx, ${targetIdx}]
+
+# ── build sweep matrix ──
+N = len(X_all)
+X_sweep = np.tile(freeze_pt, (N, 1))
+X_sweep[:, sweep_idx] = sweep_vals
+
+# ── scale ──
+sc_x = StandardScaler()
+sc_y = StandardScaler()
+x_tr, x_te, y_tr, y_te = train_test_split(
+    X_sweep, y, test_size=0.2, random_state=42
+)
+x_tr_s = sc_x.fit_transform(x_tr)
+y_tr_s = sc_y.fit_transform(y_tr.reshape(-1,1)).ravel()
+x_te_s = sc_x.transform(x_te)
+X_sw_s = sc_x.transform(X_sweep)
+
+
+# ── kernel ──
+ls = ${ls}
+kern_name = "${kernel}"
+noise_on  = ${noiseOn ? "True" : "False"}
+nkern     = WhiteKernel(noise_level=${noiseLevel}) if noise_on else 0.0
+
+if kern_name == "Matern-2.5":
+    k = C(1.0) * Matern(length_scale=ls, nu=2.5) + nkern
+elif kern_name == "Matern-1.5":
+    k = C(1.0) * Matern(length_scale=ls, nu=${nu}) + nkern
+elif kern_name == "RBF":
+    k = C(1.0) * RBF(length_scale=ls, length_scale_bounds=(1e-10,15)) + nkern
+else:
+    k = C(1.0) * RationalQuadratic(length_scale=ls, alpha=${rqAlpha}) + nkern
+
+# ── fit ──
+gp = GaussianProcessRegressor(
+    kernel=k, alpha=${alpha},
+    n_restarts_optimizer=${nRestarts}
+)
+gp.fit(x_tr_s, y_tr_s)
+opt_kernel_str = str(gp.kernel_)
+lml = float(gp.log_marginal_likelihood_value_)
+
+# ── predict sweep ──
+mean_s, std_s = gp.predict(X_sw_s, return_std=True)
+mean_r = sc_y.inverse_transform(mean_s.reshape(-1,1)).ravel()
+std_r  = std_s * sc_y.scale_[0]
+
+# ── predict test ──
+mean_te_s, std_te_s = gp.predict(x_te_s, return_std=True)
+mean_te = sc_y.inverse_transform(mean_te_s.reshape(-1,1)).ravel()
+
+# ── error analysis ──
+errors   = y_te - mean_te
+mu_e     = float(np.mean(errors))
+std_e    = float(np.std(errors))
+var_e    = float(np.var(errors))
+rmse     = float(np.sqrt(np.mean(errors**2)))
+mae      = float(np.mean(np.abs(errors)))
+shap_s, shap_p = (float(stats.shapiro(errors)[0]), float(stats.shapiro(errors)[1])) if len(errors)<=5000 else (0.0,0.0)
+
+# normal fit for histogram
+from scipy.stats import norm
+x_dist = np.linspace(errors.min()-std_e, errors.max()+std_e, 120).tolist()
+y_dist = norm.pdf(np.array(x_dist), mu_e, std_e).tolist()
+
+# histogram
+hist_counts, hist_edges = np.histogram(errors, bins=max(5,len(errors)//3), density=True)
+
+{
+  "sweep_vals"   : sweep_vals.tolist(),
+  "y_actual"     : y.tolist(),
+  "mean_pred"    : mean_r.tolist(),
+  "std_pred"     : std_r.tolist(),
+  "lower95"      : (mean_r - 1.96*std_r).tolist(),
+  "upper95"      : (mean_r + 1.96*std_r).tolist(),
+  "errors"       : errors.tolist(),
+  "mu_e"         : mu_e,
+  "std_e"        : std_e,
+  "var_e"        : var_e,
+  "rmse"         : rmse,
+  "mae"          : mae,
+  "shap_s"       : shap_s,
+  "shap_p"       : shap_p,
+  "x_dist"       : x_dist,
+  "y_dist"       : y_dist,
+  "hist_counts"  : hist_counts.tolist(),
+  "hist_edges"   : hist_edges.tolist(),
+  "opt_kernel"   : opt_kernel_str,
+  "lml"          : lml,
+}
+`;
+
+  try{
+    const res = await pyodide.runPythonAsync(code);
+    const r = res.toJs({dict_converter: Object.fromEntries});
+
+    currentResult = {
+      sweepVals  : r.sweep_vals,
+      yActual    : r.y_actual,
+      meanPred   : r.mean_pred,
+      stdPred    : r.std_pred,
+      lower95    : r.lower95,
+      upper95    : r.upper95,
+      errors     : r.errors,
+      muE        : r.mu_e,
+      stdE       : r.std_e,
+      varE       : r.var_e,
+      rmse       : r.rmse,
+      mae        : r.mae,
+      shapS      : r.shap_s,
+      shapP      : r.shap_p,
+      xDist      : r.x_dist,
+      yDist      : r.y_dist,
+      histCounts : r.hist_counts,
+      histEdges  : r.hist_edges,
+      optKernel  : r.opt_kernel,
+      lml        : r.lml,
+      kernel     : kernel,
+      sweepName  : PARAM_NAMES[sweepIdx],
+      targetName : OUTPUT_NAMES[targetIdx],
+      ls, alpha, noiseOn,
+    };
+  // ... rest remains the same
+
+    renderGPChart(currentResult);
+    renderErrorCharts(currentResult);
+    updateErrorStats(currentResult);
+
+    document.getElementById("opt-kernel-box").style.display = "block";
+    document.getElementById("opt-kernel-text").textContent = currentResult.optKernel;
+    document.getElementById("lml-text").textContent = `Log Marginal Likelihood: ${currentResult.lml.toFixed(4)}`;
+
+    document.getElementById("store-btn").disabled = false;
+    setStatus("ready",`✓ Done — RMSE: ${currentResult.rmse.toFixed(4)}`);
+    log("ok",`Fit OK | RMSE=${currentResult.rmse.toFixed(4)} | μ_err=${currentResult.muE.toFixed(4)} | σ²=${currentResult.varE.toFixed(5)}`);
+    log("ok",`Kernel: ${currentResult.optKernel.substring(0,60)}…`);
+
+  } catch(e){
+    log("err","GP failed: " + e.message);
+    setStatus("error","✗ GP error");
+  } finally{
+    document.getElementById("run-btn").disabled = false;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 9. CHART RENDERING
+// ════════════════════════════════════════════════════════════════
+function renderGPChart(r){
+  const color = KERNEL_COLORS[r.kernel] || "#58a6ff";
+  const ctx = document.getElementById("gp-chart").getContext("2d");
+  document.getElementById("no-data-gp").style.display = "none";
+
+  if(gpChart) gpChart.destroy();
+
+  // sort by sweep_vals for clean lines
+  const idx = r.sweepVals.map((_,i)=>i).sort((a,b)=>r.sweepVals[a]-r.sweepVals[b]);
+  const sv  = idx.map(i=>r.sweepVals[i]);
+  const ya  = idx.map(i=>r.yActual[i]);
+  const mp  = idx.map(i=>r.meanPred[i]);
+  const lo  = idx.map(i=>r.lower95[i]);
+  const hi  = idx.map(i=>r.upper95[i]);
+
+  gpChart = new Chart(ctx, {
+    type:"line",
+    data:{
+      labels: sv.map(v=>v.toFixed(3)),
+      datasets:[
+        {
+          label:"Actual",
+          data: ya,
+          borderColor:"#e6edf3",
+          borderWidth:1.5,
+          borderDash:[5,3],
+          pointRadius:3,
+          pointBackgroundColor:"#e6edf3",
+          fill:false,
+          tension:0.1,
+        },
+        {
+          label:"GP Mean",
+          data: mp,
+          borderColor: color,
+          borderWidth:2.5,
+          pointRadius:0,
+          fill:false,
+          tension:0.3,
+        },
+        {
+          label:"95% CI upper",
+          data: hi,
+          borderColor:"transparent",
+          pointRadius:0,
+          fill:"+1",
+          backgroundColor: hexToRgba(color,0.18),
+          tension:0.3,
+        },
+        {
+          label:"95% CI lower",
+          data: lo,
+          borderColor:"transparent",
+          pointRadius:0,
+          fill:false,
+          tension:0.3,
+        },
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      animation:{duration:400},
+      plugins:{
+        legend:{
+          labels:{color:"#8b949e",font:{size:11},
+            filter: item => item.text !== "95% CI lower"
+          }
+        },
+        tooltip:{
+          backgroundColor:"#1c2128",
+          borderColor:"#30363d",
+          borderWidth:1,
+          titleColor:"#e6edf3",
+          bodyColor:"#8b949e",
+          callbacks:{
+            title: items => `${r.sweepName} = ${items[0].label}`,
+          }
+        }
+      },
+      scales:{
+        x:{
+          title:{display:true, text:r.sweepName, color:"#8b949e",font:{size:11}},
+          ticks:{color:"#8b949e",maxTicksLimit:10,font:{size:10}},
+          grid:{color:"#21262d"},
+        },
+        y:{
+          title:{display:true, text:r.targetName, color:"#8b949e",font:{size:11}},
+          ticks:{color:"#8b949e",font:{size:10}},
+          grid:{color:"#21262d"},
+        }
+      }
+    }
+  });
+}
+
+function renderErrorCharts(r){
+  const color = KERNEL_COLORS[r.kernel] || "#58a6ff";
+
+  // ── Residuals scatter ──
+  const rCtx = document.getElementById("resid-chart").getContext("2d");
+  if(residChart) residChart.destroy();
+
+  residChart = new Chart(rCtx, {
+    type:"scatter",
+    data:{
+      datasets:[
+        {
+          label:"Residuals",
+          data: r.errors.map((e,i)=>({x:i,y:e})),
+          backgroundColor: hexToRgba(color,0.7),
+          pointRadius:5,
+        },
+        {
+          label:"+1σ",
+          data:[{x:0,y:r.stdE},{x:r.errors.length-1,y:r.stdE}],
+          borderColor:hexToRgba(color,0.5),
+          borderWidth:1,
+          borderDash:[4,3],
+          pointRadius:0,
+          type:"line",
+          fill:false,
+        },
+        {
+          label:"-1σ",
+          data:[{x:0,y:-r.stdE},{x:r.errors.length-1,y:-r.stdE}],
+          borderColor:hexToRgba(color,0.5),
+          borderWidth:1,
+          borderDash:[4,3],
+          pointRadius:0,
+          type:"line",
+          fill:false,
+        },
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      animation:{duration:300},
+      plugins:{
+        legend:{labels:{color:"#8b949e",font:{size:10}}},
+        annotation:{
+          annotations:{
+            zeroLine:{type:"line",yMin:0,yMax:0,borderColor:"#8b949e",borderWidth:1,borderDash:[3,3]}
+          }
+        }
+      },
+      scales:{
+        x:{title:{display:true,text:"test sample index",color:"#8b949e",font:{size:10}},ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}},
+        y:{title:{display:true,text:"actual − predicted",color:"#8b949e",font:{size:10}},ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}},
+      }
+    }
+  });
+
+  // ── Histogram + fitted normal ──
+  const hCtx = document.getElementById("hist-chart").getContext("2d");
+  if(histChart) histChart.destroy();
+
+  const binCenters = r.histEdges.slice(0,-1).map((e,i)=>(e+r.histEdges[i+1])/2);
+
+  histChart = new Chart(hCtx, {
+    type:"bar",
+    data:{
+      labels: binCenters.map(v=>v.toFixed(3)),
+      datasets:[
+        {
+          label:"Error density",
+          data: r.histCounts,
+          backgroundColor: hexToRgba(color,0.45),
+          borderColor:color,
+          borderWidth:1,
+        },
+        {
+          label:"N(μ,σ) fit",
+          data: (() => {
+            // map fitted normal to same bin grid
+            return binCenters.map(x => {
+              const z=(x-r.muE)/r.stdE;
+              return Math.exp(-0.5*z*z)/(r.stdE*Math.sqrt(2*Math.PI));
+            });
+          })(),
+          type:"line",
+          borderColor:"#e6edf3",
+          borderWidth:2,
+          pointRadius:0,
+          fill:false,
+          tension:0.4,
+        }
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      animation:{duration:300},
+      plugins:{
+        legend:{labels:{color:"#8b949e",font:{size:10}}},
+        annotation:{
+          annotations:{
+            muLine:{
+              type:"line",
+              xMin: binCenters.reduce((b,c,i)=>Math.abs(c-r.muE)<Math.abs(binCenters[b]-r.muE)?i:b, 0),
+              xMax: binCenters.reduce((b,c,i)=>Math.abs(c-r.muE)<Math.abs(binCenters[b]-r.muE)?i:b, 0),
+              borderColor:"#f85149",borderWidth:1.5,borderDash:[4,3],
+              label:{content:`μ=${r.muE.toFixed(4)}`,enabled:true,color:"#f85149",font:{size:9}}
+            }
+          }
+        }
+      },
+      scales:{
+        x:{title:{display:true,text:"error",color:"#8b949e",font:{size:10}},ticks:{color:"#8b949e",font:{size:8},maxTicksLimit:8},grid:{color:"#21262d"}},
+        y:{title:{display:true,text:"density",color:"#8b949e",font:{size:10}},ticks:{color:"#8b949e",font:{size:9}},grid:{color:"#21262d"}},
+      }
+    }
+  });
+}
+
+function updateErrorStats(r){
+  document.getElementById("e-rmse").textContent = r.rmse.toFixed(4);
+  document.getElementById("e-mae").textContent  = r.mae.toFixed(4);
+  document.getElementById("e-mean").textContent = r.muE.toFixed(4);
+  document.getElementById("e-var").textContent  = r.varE.toFixed(5);
+
+  const good = Math.abs(r.muE) < 0.01;
+  document.getElementById("e-mean").parentElement.className = "estat " + (good?"good":"warn");
+
+  const shapiroBox = document.getElementById("shapiro-box");
+  if(r.shapP > 0){
+    const normal = r.shapP > 0.05;
+    shapiroBox.innerHTML = `Shapiro-Wilk test: W=${r.shapS.toFixed(4)}, p=${r.shapP.toFixed(4)} — `
+      + `<span style="color:${normal?"var(--accent2)":"var(--warn)"}">`
+      + (normal ? "✓ errors look Gaussian (p > 0.05)" : "⚠ errors may not be Gaussian (p ≤ 0.05)")
+      + "</span>";
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// 10. COMPARISON SHELF
+// ════════════════════════════════════════════════════════════════
+document.getElementById("store-btn").addEventListener("click", ()=>{
+  if(!currentResult) return;
+  storeToShelf(currentResult);
+});
+document.getElementById("clear-shelf-btn").addEventListener("click", ()=>{
+  shelfItems = [];
+  document.getElementById("shelf").innerHTML = `<div style="color:var(--muted);font-size:12px;">No plots stored yet.</div>`;
+});
+
+function storeToShelf(r){
+  shelfItems.push({...r, ts: new Date().toLocaleTimeString()});
+  renderShelf();
+  document.querySelector('[data-tab="comparison"]').click();
+  log("ok",`Stored: ${r.kernel} | ${r.sweepName}→${r.targetName} | RMSE=${r.rmse.toFixed(4)}`);
+}
+
+function renderShelf(){
+  const shelf = document.getElementById("shelf");
+  shelf.innerHTML = "";
+
+  shelfItems.forEach((r,idx)=>{
+    const color = KERNEL_COLORS[r.kernel] || "#58a6ff";
+    const card  = document.createElement("div");
+    card.className = "shelf-card";
+    card.innerHTML = `
+      <div class="shelf-label">#${idx+1} ${r.kernel} @ ${r.ts}</div>
+      <canvas id="shelf-canvas-${idx}" height="120"></canvas>
+      <div class="shelf-meta">
+        sweep: ${r.sweepName} → ${r.targetName}<br/>
+        RMSE=${r.rmse.toFixed(4)} | μ_err=${r.muE.toFixed(4)}<br/>
+        ls=${r.ls.toFixed(3)} | α=${r.alpha.toExponential(0)}
+      </div>
+    `;
+    shelf.appendChild(card);
+
+    // mini chart
+    setTimeout(()=>{
+      const ctx = document.getElementById(`shelf-canvas-${idx}`).getContext("2d");
+      const sv = r.sweepVals;
+      const idx2 = sv.map((_,i)=>i).sort((a,b)=>sv[a]-sv[b]);
+      new Chart(ctx,{
+        type:"line",
+        data:{
+          labels: idx2.map(i=>sv[i].toFixed(2)),
+          datasets:[
+            {data:idx2.map(i=>r.yActual[i]),borderColor:"#8b949e",borderWidth:1,pointRadius:0,fill:false},
+            {data:idx2.map(i=>r.meanPred[i]),borderColor:color,borderWidth:1.5,pointRadius:0,fill:false},
+            {
+              data:idx2.map(i=>r.upper95[i]),
+              borderColor:"transparent",pointRadius:0,
+              fill:"+1",backgroundColor:hexToRgba(color,0.18)
+            },
+            {data:idx2.map(i=>r.lower95[i]),borderColor:"transparent",pointRadius:0,fill:false},
+          ]
+        },
+        options:{
+          responsive:true,maintainAspectRatio:false,
+          animation:{duration:0},
+          plugins:{legend:{display:false},tooltip:{enabled:false}},
+          scales:{x:{display:false},y:{display:false}},
+        }
+      });
+    }, 50);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// 11. TABS
+// ════════════════════════════════════════════════════════════════
+function setupTabs(){
+  document.querySelectorAll(".tab").forEach(tab=>{
+    tab.addEventListener("click",()=>{
+      document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+      document.querySelectorAll(".tab-content").forEach(t=>t.style.display="none");
+      tab.classList.add("active");
+      const id = "tab-" + tab.dataset.tab;
+      document.getElementById(id).style.display = "block";
+      selectedTab = tab.dataset.tab;
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// 12. SWEEP PARAM CHANGE → update freeze display
+// ════════════════════════════════════════════════════════════════
+document.getElementById("sweep-param").addEventListener("change",()=>{
+  if(freezePoint){
+    const mins = PARAM_NAMES.map((_,i) => Math.min(...dataX.map(r=>r[i])));
+    const maxs = PARAM_NAMES.map((_,i) => Math.max(...dataX.map(r=>r[i])));
+    updateFreezeDisplay(freezePoint, mins, maxs);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// 13. INIT
+// ════════════════════════════════════════════════════════════════
+async function init(){
+  setupFileUpload();
+  setupSliders();
+  setupKernelChips();
+  setupTabs();
+  await initPyodide();
+}
+
+init().catch(e=>{
+  log("err","Init failed: "+e.message);
+  setStatus("error","✗ Failed to load runtime");
+});
+</script>
+</body>
+</html>
